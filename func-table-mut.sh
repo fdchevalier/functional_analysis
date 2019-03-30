@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 0.6
+# Version: 0.7
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2018-07-19
+# Modified in: 2019-03-29
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v0.7 - 2019-03-23: bug in identifying strand corrected / Step to make all the sequence uppercase added to avoid unexpected behavior
 # v0.6 - 2018-07-19: no pop file sorting anymore but error message instead / bug regarding MNPs coordinates when antisens genes corrected / warning message if MNPs present added / tmp folder creation and removal updated
 # v0.5 - 2018-01-18: complex event (FreeBayes specific) column added
 # v0.4 - 2018-01-16: warning when indels toward the end cannot be process / bug regarding diff output corrected
@@ -321,7 +322,7 @@ myfeatures=$(echo "$myfeatures" | egrep -i "exon|cds|intron|utr")
 
 
 # Strand orientation
-strand=$(grep -i "gene" "$mygff" | cut -f 7)
+strand=$(awk 'tolower($3) ~ /gene/ {print $7}' "$mygff")
 
 
 #--------------------#
@@ -332,7 +333,7 @@ info "Generating reference sequence"
 
 # Extract reference sequence from genome
 bedtools getfasta -fi "$mygenome" -bed "$mygene" -fo "$tmp.fa"
-sed -ri "s/(>.*):.*$/\1/g" "$tmp.fa"
+sed -ri 's/(>.*):.*$/\1/g; />/!s/.*/\U&/' "$tmp.fa"
 
 # Adjust CDS coordinates
 mystart=$(cut -f 2 "$mygene")
