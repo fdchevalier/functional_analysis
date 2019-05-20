@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 0.1
+# Version: 0.2
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2017-09-28
+# Modified in: 2017-10-02
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v0.2 - 2017-10-02: bug due to * alt allele (missing data due to upstream deletion) corrected
 # v0.1 - 2017-09-28: bug induced by Haplotype Caller (SNP coded as InDel when InDel at the same site too) corrected / reference sequenced added in fasta
 # v0.0 - 2017-09-01: creation
 
@@ -390,6 +391,9 @@ do
     do
         # Select the alternative allele
         myalt=$(echo "$myalt_all" | cut -d "," -f $a)
+
+        # Skip if allele codes for missing data
+        [[ $myalt == "*" ]]  && continue
 
         # Adjust sequence if on the minus strand
         if [[ $strand == - ]]
