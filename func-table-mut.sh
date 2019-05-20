@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 0.3
+# Version: 0.4
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2017-10-10
+# Modified in: 2018-01-16
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v0.4 - 2018-01-16: warning when indels toward the end cannot be process / bug regarding diff output corrected
 # v0.3 - 2017-10-10: output naming option added / genomic position added
 # v0.2 - 2017-10-02: bug due to * alt allele (missing data due to upstream deletion) corrected
 # v0.1 - 2017-09-28: bug induced by Haplotype Caller (SNP coded as InDel when InDel at the same site too) corrected / reference sequenced added in fasta
@@ -431,6 +432,13 @@ do
         [[ $(echo $myref | grep -o "." | wc -l) != $(echo $myalt | grep -o "." | wc -l) && $(echo $myref | wc -m) != 2 ]] && mymut_type="Del" && myalt_tag=$(echo $myref | sed "s/./$tag/g") 
         [[ $(echo $myref | grep -o "." | wc -l) != $(echo $myalt | grep -o "." | wc -l) && $(echo $myalt | wc -m) != 2 ]] && mymut_type="Ins"
 
+        # Test if the reference allele is in the sequence
+        if [[ ! $(egrep "^.{$mypos_sed}$myref" <(tail -n +2 "$tmp.fa")) ]]
+        then
+            warnings=($warnings "Mutation $myalt at $mypos in the gene (genomic position: $mypos_genome) was not identified. This is likely due to out of coordinates mutation.")
+            continue
+        fi
+
         # If SNP but long tag
         [[ $mymut_type == "SNP" && $(echo $myref | wc -m) != 2 ]] && myalt_tag=$(echo $myref | sed "s/./$tag/g")
 
@@ -501,7 +509,7 @@ do
             else
                 myaa_ref=$(echo "$mydiff" | grep -m 1 "<" | cut -d " " -f 2)
                 myaa_alt=$(echo "$mydiff" | grep -m 1 ">" | cut -d " " -f 2)
-                myaa_pos=$(echo "$mydiff" | head -n 1 | cut -d "," -f 1 ||:)
+                myaa_pos=$(echo "$mydiff" | head -n 1 | cut -d "," -f 1 | cut -d "c" -f 1 ||:)
                 mystop_pos=$(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | tr -d "\n" | grep -o "." | grep -m 1 -n "*" | cut -d ":" -f 1 ||:)
                 mystop_pos=$(( $mystop_pos - $myaa_pos ))
                 mymut="p.${myaa_ref}${myaa_pos}${myaa_alt}fsX${mystop_pos}"
@@ -564,6 +572,16 @@ do
     ((mystep++))
     
 done < "$myvcf"
+
+
+# Print warnings if any
+if [[ -n "$warnings" ]]
+then
+    for i in "${warnings[@]}"
+    do
+        warning "$i"
+    done
+fi
 
 
 # Header of the table report
