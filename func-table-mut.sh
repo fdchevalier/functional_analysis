@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 0.2
+# Version: 0.3
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2017-10-02
+# Modified in: 2017-10-10
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v0.3 - 2017-10-10: output naming option added / genomic position added
 # v0.2 - 2017-10-02: bug due to * alt allele (missing data due to upstream deletion) corrected
 # v0.1 - 2017-09-28: bug induced by Haplotype Caller (SNP coded as InDel when InDel at the same site too) corrected / reference sequenced added in fasta
 # v0.0 - 2017-09-01: creation
@@ -35,7 +36,7 @@ version=$(grep -i -m 1 "version" "$0" | cut -d ":" -f 2 | sed "s/^ *//g")
 # Usage message
 function usage {
     echo -e "
-    \e[32m ${0##*/} \e[00m -v|--vcf file -r|--ref file -g|-gff file -p|--pop file -h|--help
+    \e[32m ${0##*/} \e[00m -v|--vcf file -r|--ref file -g|-gff file -o|-out file -p|--pop file -h|--help
 
 Aim: $aim
 
@@ -45,7 +46,8 @@ Options:
     -v, --vcf       VCF input file
     -r, --ref       reference genome
     -g, --gff       GFF file of the gene of interest
-    -p, --pop       population file (tab separated values). This file must be formated as follows:
+    -o, --out       name of the output report [default: gff-filename.tsv]
+    -p, --pop       population file (tab separated values) [optional]. This file must be formated as follows:
                         - first column contains sample names
                         - second column contains corresponding population names
     -h, --help      this message
@@ -164,10 +166,11 @@ set -e
 while [[ $# -gt 0 ]]
 do
     case $1 in
-        -v|--vcf    ) myvcf="$2"    ; shift 2 ;;
-        -r|--ref    ) mygenome="$2" ; shift 2 ;;
-        -g|--gff    ) mygff="$2"    ; shift 2 ;;
-        -p|--pop    ) mypop_f="$2"  ; shift 2 ;;
+        -v|--vcf    ) myvcf="$2"             ; shift 2 ;;
+        -r|--ref    ) mygenome="$2"          ; shift 2 ;;
+        -g|--gff    ) mygff="$2"             ; shift 2 ;;
+        -o|--out    ) report="${2%.tsv}.tsv" ; shift 2 ;;
+        -p|--pop    ) mypop_f="$2"           ; shift 2 ;;
         -h|--help   ) usage ; exit 0 ;;
         *           ) error "Invalid option: $1\n$(usage)" 1 ;;
     esac
@@ -193,12 +196,23 @@ fi
 [[ -n "$mypop_f" && ! -s "$mypop_f" ]] && error "Population file does not exist or is empty. Exiting..." 1
 
 
+# GFF filename for output
+fn=$(basename "${mygff%.*}")
 
 # Output filename from GFF
-fn=$(basename "${mygff%.*}")
-report=${fn}_report.tsv
-seq_cds_f="[na]_${fn}_cds.fa"
-seq_aa_f="[aa]_${fn}.fa"
+if [[ -z "$report" ]]
+then
+    fn_out="$fn"
+    report="${fn}.tsv"
+else 
+    fn_out=$(basename "${report%.*}")
+fi
+[[ -s "$report" ]] && error "Output file $report exist. Exiting..." 1
+
+# Sequence output files
+seq_cds_f="[na]_${fn_out}_cds.fa"
+seq_aa_f="[aa]_${fn_out}.fa"
+[[ -s "$seq_cds_f" || -s "$seq_aa_f" ]] && error "CDS or amino acid sequence files exist. Exiting..." 1
 
 # Temporary files and folder
 tmp_fd="tmp"
@@ -258,7 +272,7 @@ if [[ ! $(echo "$myfeatures" | grep -i "intron") ]]
 then
     i=$(echo "$myfeatures" | egrep -i "exon|cds")
     paste <(sort -k2n "$tmp_fd/${fn}_${i}.bed" | cut -f 3 | head -n -1) <(sort -k2n "$tmp_fd/${fn}_${i}.bed" | cut -f 2 | tail -n +2) > "$tmp_fd/${fn}_intron.bed"
-    sed -i "s/^/$(cut -f 1 tmp/Smp_089320_gene.bed)\t/g" "$tmp_fd/${fn}_intron.bed"
+    sed -i "s/^/$(cut -f 1 "$mygene")\t/g" "$tmp_fd/${fn}_intron.bed"
     myfeatures=$(echo -e "$myfeatures\nintron")
 fi
 
@@ -405,6 +419,9 @@ do
             mymut_tag="${myref}>${myalt}"
         fi
 
+        # Gene tag
+        mygene_tag="g.${mypos_ig}${mymut_tag}"
+
         # Default is SNP
         mymut_type="SNP"
         tag=$a
@@ -495,8 +512,13 @@ do
         # Mutation in CDS: if in an exon, is mutation synonymous or not (i.e. if there is a mutation in the protein)
         if [[ $(echo $myregion | egrep -i "exon|cds") ]]
         then
-            [[ -z "$mymut" ]] && mymut_snp_type="Syn"
-            [[ -n "$mymut" ]] && mymut_snp_type="Non_syn"
+            if [[ "$mymut_type" == "SNP" ]]
+            then
+                [[ -z "$mymut" ]] && mymut_snp_type="Syn"
+                [[ -n "$mymut" ]] && mymut_snp_type="Non_syn" 
+            else
+                mymut_snp_type="-"
+            fi
 
             # Position in coding sequence
             [[ $strand == - ]] && f=3 || f=2
@@ -517,12 +539,12 @@ do
             mymut_snp_type="-"
             mycds_tag="-"
         fi
-        
+
         # Set empty mymut to a value
         [[ -z "$mymut" ]] && mymut="-"
 
-
-        echo -e "g.${mypos_ig}${mymut_tag}\t${mycds_tag}\t$myregion\t${mymut_type}\t${mymut_snp_type}\t$mymut\t${myGT_ln}" >> "$report_tmp"
+        # Write the report line
+        echo -e "${mypos_genome}\t${mygene_tag}\t${mycds_tag}\t$myregion\t${mymut_type}\t${mymut_snp_type}\t$mymut\t${myGT_ln}" >> "$report_tmp"
 
 
         #~~~~~~~~~~~~~~~~~~~~~~~~~~#
@@ -545,7 +567,7 @@ done < "$myvcf"
 
 
 # Header of the table report
-echo -e "Gene_pos\tCDS_pos\tGene_region\tMutation_type\tSNP_type\tProtein_mutation\t${myhdr_pop}" > "$report"
+echo -e "Genomic_pos\tGene_pos\tCDS_pos\tGene_region\tMutation_type\tSNP_type\tProtein_mutation\t${myhdr_pop}" > "$report"
 
 [[ $strand != - ]] && cat "$report_tmp" >> "$report"
 [[ $strand == - ]] && tac "$report_tmp" >> "$report"
