@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 0.0
+# Version: 0.1
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in:
+# Modified in: 2017-09-28
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v0.1 - 2017-09-28: bug induced by Haplotype Caller (SNP coded as InDel when InDel at the same site too) corrected / reference sequenced added in fasta
 # v0.0 - 2017-09-01: creation
 
 version=$(grep -i -m 1 "version" "$0" | cut -d ":" -f 2 | sed "s/^ *//g")
@@ -298,6 +299,10 @@ then
     mystart_gene=$(( $(cut -f 3 "$mygene") - $mystart + 1 ))
 fi
 
+# Add reference sequences 
+echo -e ">${fn}_ref\n$(cat "${tmp}_cds.fa")"                    > "$seq_cds_f"
+echo -e ">${fn}_ref\n$(tail -n +2 "${tmp}_aa.fa" | tr -d "\n")" > "$seq_aa_f"
+
 
 #-------------#
 # Populations #
@@ -402,8 +407,11 @@ do
         myalt_tag=$tag
         
         # If INDEL
-        [[ $(echo $myref | wc -m) != 2 ]] && mymut_type="Del" && myalt_tag=$(echo $myref | sed "s/./$tag/g") 
-        [[ $(echo $myalt | wc -m) != 2 ]] && mymut_type="Ins" 
+        [[ $(echo $myref | grep -o "." | wc -l) != $(echo $myalt | grep -o "." | wc -l) && $(echo $myref | wc -m) != 2 ]] && mymut_type="Del" && myalt_tag=$(echo $myref | sed "s/./$tag/g") 
+        [[ $(echo $myref | grep -o "." | wc -l) != $(echo $myalt | grep -o "." | wc -l) && $(echo $myalt | wc -m) != 2 ]] && mymut_type="Ins"
+
+        # If SNP but long tag
+        [[ $mymut_type == "SNP" && $(echo $myref | wc -m) != 2 ]] && myalt_tag=$(echo $myref | sed "s/./$tag/g")
 
         # Mutate the reference seqence with a tag (the tag is critical for INDELs otherwise the coordinates change in bedtools can't extract the CDS)
         sed -n "1p" "$tmp.fa" > "${tmp}_${mypos_ig}${mymut_tag}.fa"
@@ -541,11 +549,11 @@ echo -e "Gene_pos\tCDS_pos\tGene_region\tMutation_type\tSNP_type\tProtein_mutati
 # Generate multifasta files
 if [[ $strand == - ]]
 then
-    echo -e "$seq_cds_na" | tac | sed "/^$/d" | tr "|" "\n"  > "$seq_cds_f"
-    echo -e "$seq_aa"     | tac | sed "/^$/d" | tr "|" "\n"  > "$seq_aa_f"
+    echo -e "$seq_cds_na" | tac | sed "/^$/d" | tr "|" "\n"  >> "$seq_cds_f"
+    echo -e "$seq_aa"     | tac | sed "/^$/d" | tr "|" "\n"  >> "$seq_aa_f"
 else
-    echo -e "$seq_cds_na" | sed "/^$/d" | tr "|" "\n" > "$seq_cds_f"
-    echo -e "$seq_aa"     | sed "/^$/d" | tr "|" "\n" > "$seq_aa_f"
+    echo -e "$seq_cds_na" | sed "/^$/d" | tr "|" "\n" >> "$seq_cds_f"
+    echo -e "$seq_aa"     | sed "/^$/d" | tr "|" "\n" >> "$seq_aa_f"
 fi
 
 exit 0
