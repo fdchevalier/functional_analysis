@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 0.5
+# Version: 0.6
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2018-01-18
+# Modified in: 2018-07-19
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v0.6 - 2018-07-19: no pop file sorting anymore but error message instead / bug regarding MNPs coordinates when antisens genes corrected / warning message if MNPs present added / tmp folder creation and removal updated
 # v0.5 - 2018-01-18: complex event (FreeBayes specific) column added
 # v0.4 - 2018-01-16: warning when indels toward the end cannot be process / bug regarding diff output corrected
 # v0.3 - 2017-10-10: output naming option added / genomic position added
@@ -217,12 +218,9 @@ seq_aa_f="[aa]_${fn_out}.fa"
 [[ -s "$seq_cds_f" || -s "$seq_aa_f" ]] && error "CDS or amino acid sequence files exist. Exiting..." 1
 
 # Temporary files and folder
-tmp_fd="tmp"
+tmp_fd=$(mktemp -d)
 tmp="$tmp_fd/mygene"
 report_tmp="$tmp_fd/report"
-
-[[ -d "$tmp_fd" ]] && rm -R "$tmp_fd/"
-mkdir "$tmp_fd"
 
 
 
@@ -235,18 +233,57 @@ trap "clean_up "$tmp_fd" "$report" "$seq_cds_f" "$seq_aa_f"" SIGINT SIGTERM    #
 wait
 
 
+#-------------#
+# Populations #
+#-------------#
+
+# Header of the table report
+myhdr_pop="All_ref_allele_nb\tAll_alt_allele_nb\tAll_hmz_sample_nb\tAll_htz_sample_nb"
+
+# Columns from VCF file to get genotype from
+myclns="10-"
+
+# If different populations
+if [[ -n "$mypop_f" ]]
+then
+    # Population list
+    mypops=($(cut -f 2 "$mypop_f" | uniq))
+    #mypops_u=($(cut -f 2 "$mypop_f" | sort | uniq))
+
+    # Check if file is ordered
+    #[[ ${#mypops[@]} != ${#mypops_u[@]} ]] && error "The $mypop_f file does not seem to be ordered. Exiting..." 1
+    [[ $(printf "%s\n" "${mypops[@]}" | sort | uniq | wc -l) != ${#mypops[@]} ]] && error "The file $mypop_f does not seem to be ordered. Exiting..." 1
+    
+    info "Identifying samples related to $(printf "%s, " "${mypops[@]}" | sed "s/, $//") population(s)"
+    
+    # VCF column header (to find samples)
+    myhdr_vcf=$(grep -m 1 "#C" "$myvcf")
+
+    # Get corresponding VCF columns for each population
+    for p in ${mypops[@]}
+    do
+        myspl=$(awk -v p="$p" '$2 == p {print $1}' "$mypop_f" | sed -r "s/(.*)/\^\1\$/g" | tr "\n" "|" | sed "s/|$//g")
+        mycln=$(echo "$myhdr_vcf" | tr "\t" "\n" | egrep -n "$myspl" | cut -d ":" -f 1 | tr "\n" "," | sed "s/,$//g")
+        myclns=(${myclns[@]} $mycln)
+
+        # Update header of the table report
+        myhdr_pop="${myhdr_pop}\t${p}_ref_allele_nb\t${p}_alt_allele_nb\t${p}_hmz_sample_nb\t${p}_htz_sample_nb"
+    done
+fi
+
+
 #----------#
 # GFF file #
 #----------#
 
-info "Extraction information from gff"
+info "Extraction information from GFF"
 
 # Get features from the GFF
 myfeatures=$(cut -f 3 "$mygff")
 
 # Check gene feature 
-[[ ! $(echo "$myfeatures" | grep -i "gene") ]]      && error "No gene detected in the gff file." 1
-[[ $(echo "$myfeatures" | grep -c -i "gene") > 1 ]] && error "More than one gene detected in the gff file." 1
+[[ ! $(echo "$myfeatures" | grep -i "gene") ]]      && error "No gene detected in the GFF file." 1
+[[ $(echo "$myfeatures" | grep -c -i "gene") > 1 ]] && error "More than one gene detected in the GFF file." 1
 
 # Update features to get a list of unique items
 myfeatures=$(echo "$myfeatures" | sort | uniq)
@@ -321,40 +358,6 @@ echo -e ">${fn}_ref\n$(cat "${tmp}_cds.fa")"                    > "$seq_cds_f"
 echo -e ">${fn}_ref\n$(tail -n +2 "${tmp}_aa.fa" | tr -d "\n")" > "$seq_aa_f"
 
 
-#-------------#
-# Populations #
-#-------------#
-
-# Header of the table report
-myhdr_pop="All_ref_allele_nb\tAll_alt_allele_nb\tAll_hmz_sample_nb\tAll_htz_sample_nb"
-
-# Columns from VCF file to get genotype from
-myclns="10-"
-
-# If different populations
-if [[ -n "$mypop_f" ]]
-then
-    # Population list
-    mypops=$(cut -f 2 "$mypop_f" | sort | uniq)
-    
-    info "Identifying samples related to $(echo $mypops | sed "s/ /, /g") population(s)"
-    
-    # VCF column header (to find samples)
-    myhdr_vcf=$(grep -m 1 "#C" "$myvcf")
-
-    # Get corresponding VCF columns for each population
-    for p in $mypops
-    do
-        myspl=$(awk -v p=$p '$2 == p {print $1}' "$mypop_f" | sed -r "s/(.*)/\^\1\$/g" | tr "\n" "|" | sed "s/|$//g")
-        mycln=$(echo "$myhdr_vcf" | tr "\t" "\n" | egrep -n "$myspl" | cut -d ":" -f 1 | tr "\n" "," | sed "s/,$//g")
-        myclns=(${myclns[@]} $mycln)
-
-        # Update header of the table report
-        myhdr_pop="${myhdr_pop}\t${p}_ref_allele_nb\t${p}_alt_allele_nb\t${p}_hmz_sample_nb\t${p}_htz_sample_nb"
-    done
-fi
-
-
 #-----------------------#
 # Variants in sequences #
 #-----------------------#
@@ -393,14 +396,14 @@ do
             continue
         fi
     done
-    
-    # Position within the gene
-    [[ $strand == - ]] && mypos_ig=$(( $mystart_gene - $mypos )) || mypos_ig=$mypos
 
 
     # Get alleles 
     myref=$(echo "$myline" | cut -f 4)
     myalt_all=$(echo "$myline" | cut -f 5)
+
+    # Position within the gene
+    [[ $strand == - ]] && mypos_ig=$(( $mystart_gene - $mypos - (${#myref} - 1) )) || mypos_ig=$mypos
 
     # For each alleles found in the ALT field
     for ((a=1 ; a <= $(echo "$myalt_all" | awk -F "," '{print NF}') ; a++))
@@ -475,11 +478,11 @@ do
             
             # Genotype frequency
             alleles=$(echo "$myline" | cut -f ${myclns[$c]} | tr "\t" "\n" | cut -d ":" -f $GT_f)
-            hmz=$(echo "$alleles" | egrep -c "$a/$a"     ||:)
-            htz=$(echo "$alleles" | egrep -c "0/$a|$a/0" ||:)
+            hmz=$(echo "$alleles" | egrep -c "$a[/|]$a"     ||:)
+            htz=$(echo "$alleles" | egrep -c "0[/|]$a|$a[/|]0" ||:)
 
             # Allele frequency
-            alleles=$(echo  "$alleles" | tr "/" "\n")
+            alleles=$(echo  "$alleles" | sed "s,[/|],\\n,g")
             myref_nb=$(echo "$alleles" | grep -c "0"  ||:)
             myalt_nb=$(echo "$alleles" | grep -c "$a" ||:)
 
@@ -549,7 +552,7 @@ do
             fi
 
             [[ $strand != - ]] && mypos_cds=$(( $mypos_genome - $mypos_cds + $mypos_add + 1))
-            [[ $strand == - ]] && mypos_cds=$(( $mypos_cds - $mypos_genome + $mypos_add + 1))
+            [[ $strand == - ]] && mypos_cds=$(( $mypos_cds - $mypos_genome + $mypos_add + 1 - (${#myref} - 1) ))
             mycds_tag="c.${mypos_cds}${mymut_tag}"
         else
             mymut_snp_type="-"
@@ -591,6 +594,9 @@ then
     done
 fi
 
+[[ $(cut -f 6 "$report_tmp" | grep -i yes) ]] && warning "Complex events were present in the VCF file so the allele frequencies for those might be incorrect. To get correct frequencies, use vcfalleleprimitives from vcflib to simplify complex events."
+
+
 
 # Header of the table report
 echo -e "Genomic_pos\tGene_pos\tCDS_pos\tGene_region\tMutation_type\tComplex_event\tSNP_type\tProtein_mutation\t${myhdr_pop}" > "$report"
@@ -607,5 +613,8 @@ else
     echo -e "$seq_cds_na" | sed "/^$/d" | tr "|" "\n" >> "$seq_cds_f"
     echo -e "$seq_aa"     | sed "/^$/d" | tr "|" "\n" >> "$seq_aa_f"
 fi
+
+# Clean temporary folder
+clean_up "$tmp_fd"
 
 exit 0
