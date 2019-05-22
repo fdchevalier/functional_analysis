@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 0.4
+# Version: 0.5
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2018-01-16
+# Modified in: 2018-01-18
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v0.5 - 2018-01-18: complex event (FreeBayes specific) column added
 # v0.4 - 2018-01-16: warning when indels toward the end cannot be process / bug regarding diff output corrected
 # v0.3 - 2017-10-10: output naming option added / genomic position added
 # v0.2 - 2017-10-02: bug due to * alt allele (missing data due to upstream deletion) corrected
@@ -442,6 +443,10 @@ do
         # If SNP but long tag
         [[ $mymut_type == "SNP" && $(echo $myref | wc -m) != 2 ]] && myalt_tag=$(echo $myref | sed "s/./$tag/g")
 
+        # If SNP but complex event (FreeBayes specific)
+        evt=$(diff <(echo $myref | grep -o .) <(echo $myalt | grep -o .) | grep -c "<" ||:)
+        [[ $mymut_type == "SNP" && $evt > 1 ]] && cplx_evt="Yes ($evt)" || cplx_evt="No"
+
         # Mutate the reference seqence with a tag (the tag is critical for INDELs otherwise the coordinates change in bedtools can't extract the CDS)
         sed -n "1p" "$tmp.fa" > "${tmp}_${mypos_ig}${mymut_tag}.fa"
         sed -n "2p" "$tmp.fa" | sed -r "s/^(.{$mypos_sed})$myref/\1${myalt_tag}/" >> "${tmp}_${mypos_ig}${mymut_tag}.fa"
@@ -487,7 +492,10 @@ do
         mymut=""    # Reset variable
         if [[ $(echo $myregion | egrep -i "exon|cds") && "$mymut_type" == SNP ]]
         then
-            mymut=$(diff --unchanged-line-format="" --old-line-format=p."%l" --new-line-format="%dn%L" <(tail -n +2 "${tmp}_aa.fa" | grep -o ".") <(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | grep -o ".") | head -n 1)
+            mymut=$(paste \
+                <(diff --unchanged-line-format="" --old-line-format="p.%L" --new-line-format="" <(tail -n +2 "${tmp}_aa.fa" | grep -o ".") <(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | grep -o ".")) \
+                <(diff --unchanged-line-format="" --old-line-format="" --new-line-format="%dn%L" <(tail -n +2 "${tmp}_aa.fa" | grep -o ".") <(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | grep -o ".")) \
+                | sed "s/\t//g" | tr "\n" "," | sed "s/,$//")
         elif [[ $(echo $myregion | egrep -i "exon|cds") && "$mymut_type" =~ "Del"|"Ins" ]]
         then
             mydiff=$(diff <(tail -n +2 "${tmp}_aa.fa" | grep -o ".") <(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | grep -o ".") ||:)
@@ -552,7 +560,7 @@ do
         [[ -z "$mymut" ]] && mymut="-"
 
         # Write the report line
-        echo -e "${mypos_genome}\t${mygene_tag}\t${mycds_tag}\t$myregion\t${mymut_type}\t${mymut_snp_type}\t$mymut\t${myGT_ln}" >> "$report_tmp"
+        echo -e "${mypos_genome}\t${mygene_tag}\t${mycds_tag}\t$myregion\t${mymut_type}\t${cplx_evt}\t${mymut_snp_type}\t$mymut\t${myGT_ln}" >> "$report_tmp"
 
 
         #~~~~~~~~~~~~~~~~~~~~~~~~~~#
@@ -585,7 +593,7 @@ fi
 
 
 # Header of the table report
-echo -e "Genomic_pos\tGene_pos\tCDS_pos\tGene_region\tMutation_type\tSNP_type\tProtein_mutation\t${myhdr_pop}" > "$report"
+echo -e "Genomic_pos\tGene_pos\tCDS_pos\tGene_region\tMutation_type\tComplex_event\tSNP_type\tProtein_mutation\t${myhdr_pop}" > "$report"
 
 [[ $strand != - ]] && cat "$report_tmp" >> "$report"
 [[ $strand == - ]] && tac "$report_tmp" >> "$report"
