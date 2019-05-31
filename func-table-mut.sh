@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 0.7
+# Version: 1.0
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2019-03-29
+# Modified in: 2019-05-31
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v1.0 - 2019-05-31: bug regarding very long sequence (>32767 bp) corrected / speed improvments / better alignment method (use of awk instead of diff) / bug regarding tag and fasta header corrected
 # v0.7 - 2019-03-23: bug in identifying strand corrected / Step to make all the sequence uppercase added to avoid unexpected behavior
 # v0.6 - 2018-07-19: no pop file sorting anymore but error message instead / bug regarding MNPs coordinates when antisens genes corrected / warning message if MNPs present added / tmp folder creation and removal updated
 # v0.5 - 2018-01-18: complex event (FreeBayes specific) column added
@@ -345,6 +346,10 @@ bedtools getfasta -fi "${tmp}.fa" -bed "${tmp}_cds.bed" -fo "${tmp}_cds.fa" &> /
 # Reverse complement the sequence if needed
 [[ $strand == - ]] && rev_cpt "${tmp}_cds.fa"
 
+# Remove headers
+sed "/>/d" "${tmp}_cds.fa" | tr -d "\n" > "${tmp}_cds.fa.tmp"
+mv "${tmp}_cds.fa.tmp" "${tmp}_cds.fa"
+
 # Translate CDS into protein sequence
 transeq -sequence "${tmp}_cds.fa" -outseq "${tmp}_aa.fa" &> /dev/null
 
@@ -434,26 +439,27 @@ do
         myalt_tag=$tag
         
         # If INDEL
-        [[ $(echo $myref | grep -o "." | wc -l) != $(echo $myalt | grep -o "." | wc -l) && $(echo $myref | wc -m) != 2 ]] && mymut_type="Del" && myalt_tag=$(echo $myref | sed "s/./$tag/g") 
-        [[ $(echo $myref | grep -o "." | wc -l) != $(echo $myalt | grep -o "." | wc -l) && $(echo $myalt | wc -m) != 2 ]] && mymut_type="Ins"
+        [[ ${#myref} != ${#myalt} && ${#myref} > 1 ]] && mymut_type="Del" && myalt_tag=$(echo $myref | sed "s/./$tag/g")
+        [[ ${#myref} != ${#myalt} && ${#myalt} > 1 ]] && mymut_type="Ins"
 
         # Test if the reference allele is in the sequence
-        if [[ ! $(egrep "^.{$mypos_sed}$myref" <(tail -n +2 "$tmp.fa")) ]]
+        ref_seq=$(tail -n +2 "$tmp.fa")
+        if [[ ${ref_seq:$mypos_sed:${#myref}} != $myref ]]
         then
             warnings=($warnings "Mutation $myalt at $mypos in the gene (genomic position: $mypos_genome) was not identified. This is likely due to out of coordinates mutation.")
             continue
         fi
 
         # If SNP but long tag
-        [[ $mymut_type == "SNP" && $(echo $myref | wc -m) != 2 ]] && myalt_tag=$(echo $myref | sed "s/./$tag/g")
+        [[ $mymut_type == SNP && $(echo $myref | wc -m) != 2 ]] && myalt_tag=$(echo $myref | sed "s/./$tag/g")
 
         # If SNP but complex event (FreeBayes specific)
         evt=$(diff <(echo $myref | grep -o .) <(echo $myalt | grep -o .) | grep -c "<" ||:)
-        [[ $mymut_type == "SNP" && $evt > 1 ]] && cplx_evt="Yes ($evt)" || cplx_evt="No"
+        [[ $mymut_type == SNP && $evt > 1 ]] && cplx_evt="Yes ($evt)" || cplx_evt="No"
 
         # Mutate the reference seqence with a tag (the tag is critical for INDELs otherwise the coordinates change in bedtools can't extract the CDS)
         sed -n "1p" "$tmp.fa" > "${tmp}_${mypos_ig}${mymut_tag}.fa"
-        sed -n "2p" "$tmp.fa" | sed -r "s/^(.{$mypos_sed})$myref/\1${myalt_tag}/" >> "${tmp}_${mypos_ig}${mymut_tag}.fa"
+        echo "${ref_seq:0:$mypos_sed}${myalt_tag}${ref_seq:$(($mypos_sed + ${#myref}))}" >> "${tmp}_${mypos_ig}${mymut_tag}.fa"
         
         # Isolate exons to have only CDS
         bedtools getfasta -fi "${tmp}_${mypos_ig}${mymut_tag}.fa" -bed "${tmp}_cds.bed" -fo "${tmp}_${mypos_ig}${mymut_tag}_cds.fa" &> /dev/null
@@ -465,6 +471,10 @@ do
         # Reverse complement the sequence if needed
         [[ $strand == - ]] && rev_cpt "${tmp}_${mypos_ig}${mymut_tag}_cds.fa"
         
+        # Remove headers
+        sed "/>/d" "${tmp}_${mypos_ig}${mymut_tag}_cds.fa" | tr -d "\n" > "${tmp}_${mypos_ig}${mymut_tag}_cds.fa.tmp"
+        mv "${tmp}_${mypos_ig}${mymut_tag}_cds.fa.tmp" "${tmp}_${mypos_ig}${mymut_tag}_cds.fa"
+
         # Translate CDS to get protein sequence
         transeq -sequence "${tmp}_${mypos_ig}${mymut_tag}_cds.fa" -outseq "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" &> /dev/null
 
@@ -494,37 +504,54 @@ do
 
         # Mutation in protein
         mymut=""    # Reset variable
-        if [[ $(echo $myregion | egrep -i "exon|cds") && "$mymut_type" == SNP ]]
-        then
-            mymut=$(paste \
-                <(diff --unchanged-line-format="" --old-line-format="p.%L" --new-line-format="" <(tail -n +2 "${tmp}_aa.fa" | grep -o ".") <(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | grep -o ".")) \
-                <(diff --unchanged-line-format="" --old-line-format="" --new-line-format="%dn%L" <(tail -n +2 "${tmp}_aa.fa" | grep -o ".") <(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | grep -o ".")) \
-                | sed "s/\t//g" | tr "\n" "," | sed "s/,$//")
-        elif [[ $(echo $myregion | egrep -i "exon|cds") && "$mymut_type" =~ "Del"|"Ins" ]]
-        then
-            mydiff=$(diff <(tail -n +2 "${tmp}_aa.fa" | grep -o ".") <(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | grep -o ".") ||:)
 
-            if [[ $(echo "$mydiff" | head -n 1 | grep "[0-9]*d[0-9]*") ]]
+        myseq_ref=$(tail -n +2 "${tmp}_aa.fa" | fold -w1)
+        myseq_alt=$(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | fold -w1)
+        myaln=$(awk 'NR==FNR {a[FNR]=$1; next} $1 != a[FNR] {print FNR "\t" $1 "\t" a[FNR]}' <(echo "$myseq_alt") <(echo "$myseq_ref"))
+
+        if [[ -n $myaln ]]
+        then
+            myaa_ref=$(echo "$myaln" | head -1 | cut -f 2 ||:)
+            myaa_alt=$(echo "$myaln" | head -1 | cut -f 3 ||:)
+            myaa_pos=$(echo "$myaln" | head -1 | cut -f 1 ||:)
+
+            if [[ $(echo $myregion | egrep -i "exon|cds") && "$mymut_type" == SNP ]]
             then
-                mypos_del=$(echo "$mydiff" | head -n 1 | cut -d "d" -f 1 ||:)
-                myaa=$(echo "$mydiff" | tail -n +2 |  cut -d " " -f 2)
-                
-                if [[ $(echo "$mypos_del" | grep ",") ]]
-                then
-                    myaa1=$(echo "$myaa" | head -n 1)
-                    myaa2=$(echo "$myaa" | tail -n 1)
-                    mypos_del=$(echo "$mypos_del" | sed "s/,/_$myaa2/")
-                    myaa=$myaa1
-                fi
+                mymut="p.${myaa_ref}${myaa_pos}${myaa_alt}"
 
-                mymut="p.${myaa}${mypos_del}del"
-            else
-                myaa_ref=$(echo "$mydiff" | grep -m 1 "<" | cut -d " " -f 2)
-                myaa_alt=$(echo "$mydiff" | grep -m 1 ">" | cut -d " " -f 2)
-                myaa_pos=$(echo "$mydiff" | head -n 1 | cut -d "," -f 1 | cut -d "c" -f 1 ||:)
-                mystop_pos=$(tail -n +2 "${tmp}_${mypos_ig}${mymut_tag}_aa.fa" | tr -d "\n" | grep -o "." | grep -m 1 -n "*" | cut -d ":" -f 1 ||:)
-                mystop_pos=$(( $mystop_pos - $myaa_pos ))
-                mymut="p.${myaa_ref}${myaa_pos}${myaa_alt}fsX${mystop_pos}"
+                # If complex event
+                while read line_diff
+                do
+                    myaa_ref=$(echo "$line_diff" | head -1 | cut -f 2 ||:)
+                    myaa_alt=$(echo "$line_diff" | head -1 | cut -f 3 ||:)
+                    myaa_pos=$(echo "$line_diff" | head -1 | cut -f 1 ||:)
+                    mymut="$mymut,p.${myaa_ref}${myaa_pos}${myaa_alt}"
+                done < <(tail -n +2 <<<"$myaln")
+
+            elif [[ $(echo $myregion | egrep -i "exon|cds") && "$mymut_type" =~ "Del"|"Ins" ]]
+            then
+                # If 1 stop codon at the last position
+                if [[ $(grep -c "\*" <<<"$myseq_alt") -eq 1 && $(tail -n 1 <<<"$myseq_alt") == "*" ]]
+                then
+
+                    if [[ "$mymut_type" =~ "Del" ]]
+                    then
+                        # Long deletion
+                        if [[ $(( $(wc -l <<<"$myseq_ref") - $(wc -l <<<"$myseq_alt") )) -gt 1 ]]
+                        then
+                            mydiff=$(( $(wc -l <<<"$myseq_ref") - $(wc -l <<<"$myseq_alt") ))
+                            myaa_pos="${myaa_pos}$(sed -n "${mydiff}p" <<<"$myaln" | awk '{print "_"$2$1}')"
+                        fi
+                            mymut="p.${myaa_ref}${myaa_pos}del"
+                    fi
+
+                    [[ "$mymut_type" =~ "Ins" ]] && mymut="p.${myaa_alt}${myaa_pos}ins"
+
+                else
+                    mystop_pos=$(echo "$myaln" | awk '$3 == "*" {print $1 ; exit}' ||:)
+                    mystop_pos=$(( $mystop_pos - $myaa_pos ))
+                    mymut="p.${myaa_ref}${myaa_pos}${myaa_alt}fsX${mystop_pos}"
+                fi
             fi
         fi
 
@@ -532,7 +559,7 @@ do
         # Mutation in CDS: if in an exon, is mutation synonymous or not (i.e. if there is a mutation in the protein)
         if [[ $(echo $myregion | egrep -i "exon|cds") ]]
         then
-            if [[ "$mymut_type" == "SNP" ]]
+            if [[ "$mymut_type" == SNP ]]
             then
                 [[ -z "$mymut" ]] && mymut_snp_type="Syn"
                 [[ -n "$mymut" ]] && mymut_snp_type="Non_syn" 
