@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 1.0
+# Version: 1.1
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2019-05-31
+# Modified in: 2021-01-20
 # Licence : GPL v3
 
 
@@ -20,6 +20,7 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v1.1 - 2021-01-20: comment in GFF handled / computation of total number of alleles/genotypes improved / output directory for sequences specified
 # v1.0 - 2019-05-31: bug regarding very long sequence (>32767 bp) corrected / speed improvments / better alignment method (use of awk instead of diff) / bug regarding tag and fasta header corrected
 # v0.7 - 2019-03-23: bug in identifying strand corrected / Step to make all the sequence uppercase added to avoid unexpected behavior
 # v0.6 - 2018-07-19: no pop file sorting anymore but error message instead / bug regarding MNPs coordinates when antisens genes corrected / warning message if MNPs present added / tmp folder creation and removal updated
@@ -41,7 +42,7 @@ version=$(grep -i -m 1 "version" "$0" | cut -d ":" -f 2 | sed "s/^ *//g")
 # Usage message
 function usage {
     echo -e "
-    \e[32m ${0##*/} \e[00m -v|--vcf file -r|--ref file -g|-gff file -o|-out file -p|--pop file -h|--help
+    \e[32m ${0##*/} \e[00m -v|--vcf file -r|--ref file -g|-gff file -o|-out file -p|--pop file -a|-all value -h|--help
 
 Aim: $aim
 
@@ -55,6 +56,9 @@ Options:
     -p, --pop       population file (tab separated values) [optional]. This file must be formated as follows:
                         - first column contains sample names
                         - second column contains corresponding population names
+    -a, -all        adjust computation of the total number of alleles. Two values allowed:
+                        - all_cln: number computed from all VCF file sample columns [default]
+                        - pop_cln: number computed from the selected populations only 
     -h, --help      this message
     "
 }
@@ -176,6 +180,7 @@ do
         -g|--gff    ) mygff="$2"             ; shift 2 ;;
         -o|--out    ) report="${2%.tsv}.tsv" ; shift 2 ;;
         -p|--pop    ) mypop_f="$2"           ; shift 2 ;;
+        -a|--all    ) myall="$2"             ; shift 2 ;;
         -h|--help   ) usage ; exit 0 ;;
         *           ) error "Invalid option: $1\n$(usage)" 1 ;;
     esac
@@ -193,6 +198,11 @@ elif [[ -z "$mygff" ]]
 then
     error "A GFF is required. Exiting...\n$(usage)" 1
 fi
+
+# Check optional options
+[[ -z $myall ]] && myall=all_cln
+[[ $myall != "all_cln" && $myall != "pop_cln" ]] && error "The -a value must be \"all_cln\" or \"pop_cln\". Exiting..." 1
+[[ $myall == "pop_cln" && -z "$mypop_f" ]] && warning "No population file given. Defaulting -a value to \"all_cln\"."
 
 # Check nature of files
 [[ ! -s "$myvcf" ]]    && error "VCF file does not exist or is empty. Exiting..." 1
@@ -214,9 +224,12 @@ else
 fi
 [[ -s "$report" ]] && error "Output file $report exist. Exiting..." 1
 
+# Output directory
+fd=$(dirname "$report")
+
 # Sequence output files
-seq_cds_f="[na]_${fn_out}_cds.fa"
-seq_aa_f="[aa]_${fn_out}.fa"
+seq_cds_f="$fd/[na]_${fn_out}_cds.fa"
+seq_aa_f="$fd/[aa]_${fn_out}.fa"
 [[ -s "$seq_cds_f" || -s "$seq_aa_f" ]] && error "CDS or amino acid sequence files exist. Exiting..." 1
 
 # Temporary files and folder
@@ -242,25 +255,24 @@ wait
 # Header of the table report
 myhdr_pop="All_ref_allele_nb\tAll_alt_allele_nb\tAll_hmz_sample_nb\tAll_htz_sample_nb"
 
+# VCF column header (to find samples)
+myhdr_vcf=$(grep -m 1 "#C" "$myvcf")
+
 # Columns from VCF file to get genotype from
-myclns="10-"
+[[ $myall == "all_cln" ]] && myclns="10-"
+[[ $myall == "pop_cln" ]] && myclns="$(echo "$myhdr_vcf" | tr "\t" "\n" | egrep -n "$(cut -f 1 "$mypop_f" | tr "\n" "|" | sed "s/|$//g")" | cut -d ":" -f 1 | tr "\n" "," | sed "s/,$//g")"
 
 # If different populations
 if [[ -n "$mypop_f" ]]
 then
     # Population list
     mypops=($(cut -f 2 "$mypop_f" | uniq))
-    #mypops_u=($(cut -f 2 "$mypop_f" | sort | uniq))
 
     # Check if file is ordered
-    #[[ ${#mypops[@]} != ${#mypops_u[@]} ]] && error "The $mypop_f file does not seem to be ordered. Exiting..." 1
     [[ $(printf "%s\n" "${mypops[@]}" | sort | uniq | wc -l) != ${#mypops[@]} ]] && error "The file $mypop_f does not seem to be ordered. Exiting..." 1
     
     info "Identifying samples related to $(printf "%s, " "${mypops[@]}" | sed "s/, $//") population(s)"
     
-    # VCF column header (to find samples)
-    myhdr_vcf=$(grep -m 1 "#C" "$myvcf")
-
     # Get corresponding VCF columns for each population
     for p in ${mypops[@]}
     do
@@ -281,7 +293,7 @@ fi
 info "Extraction information from GFF"
 
 # Get features from the GFF
-myfeatures=$(cut -f 3 "$mygff")
+myfeatures=$(sed "/^#/d" "$mygff" | cut -f 3)
 
 # Check gene feature 
 [[ ! $(echo "$myfeatures" | grep -i "gene") ]]      && error "No gene detected in the GFF file." 1
@@ -622,7 +634,7 @@ then
     done
 fi
 
-[[ $(cut -f 6 "$report_tmp" | grep -i yes) ]] && warning "Complex events were present in the VCF file so the allele frequencies for those might be incorrect. To get correct frequencies, use vcfalleleprimitives from vcflib to simplify complex events."
+[[ $(cut -f 6 "$report_tmp" | grep -i yes) ]] && warning "Complex events were present in the VCF file. If you need to simplify them, use vcfalleleprimitives (with -g) from vcflib. However, the allele frequency of these simplified events might be incorrect."
 
 
 
