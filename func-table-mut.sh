@@ -1,9 +1,9 @@
 #!/bin/bash
 # Title: func-table-mut.sh
-# Version: 1.2
+# Version: 1.3
 # Author: Frédéric CHEVALIER <fcheval@txbiomed.org>
 # Created in: 2017-09-11
-# Modified in: 2021-06-06
+# Modified in: 2022-03-18
 # Licence : GPL v3
 
 
@@ -20,9 +20,10 @@ aim="Generate mutation table from a VCF file for a given gene. The table contain
 # Versions #
 #==========#
 
+# v1.3 - 2022-03-18: option for skipping the genotype analysis added
 # v1.2 - 2021-06-06: trap bug corrected
 # v1.1 - 2021-01-20: comment in GFF handled / computation of total number of alleles/genotypes improved / output directory for sequences specified
-# v1.0 - 2019-05-31: bug regarding very long sequence (>32767 bp) corrected / speed improvments / better alignment method (use of awk instead of diff) / bug regarding tag and fasta header corrected
+# v1.0 - 2019-05-31: bug regarding very long sequence (>32767 bp) corrected / speed improvements / better alignment method (use of awk instead of diff) / bug regarding tag and fasta header corrected
 # v0.7 - 2019-03-23: bug in identifying strand corrected / Step to make all the sequence uppercase added to avoid unexpected behavior
 # v0.6 - 2018-07-19: no pop file sorting anymore but error message instead / bug regarding MNPs coordinates when antisens genes corrected / warning message if MNPs present added / tmp folder creation and removal updated
 # v0.5 - 2018-01-18: complex event (FreeBayes specific) column added
@@ -43,7 +44,7 @@ version=$(grep -i -m 1 "version" "$0" | cut -d ":" -f 2 | sed "s/^ *//g")
 # Usage message
 function usage {
     echo -e "
-    \e[32m ${0##*/} \e[00m -v|--vcf file -r|--ref file -g|-gff file -o|-out file -p|--pop file -a|-all value -h|--help
+    \e[32m ${0##*/} \e[00m -v|--vcf file -r|--ref file -g|-gff file -o|-out file -p|--pop file -a|--all value -n|--no-gt -h|--help
 
 Aim: $aim
 
@@ -54,12 +55,13 @@ Options:
     -r, --ref       reference genome
     -g, --gff       GFF file of the gene of interest
     -o, --out       name of the output report [default: gff-filename.tsv]
-    -p, --pop       population file (tab separated values) [optional]. This file must be formated as follows:
+    -p, --pop       population file (tab separated values) [optional]. This file must be formatted as follows:
                         - first column contains sample names
                         - second column contains corresponding population names
-    -a, -all        adjust computation of the total number of alleles. Two values allowed:
+    -a, --all       adjust computation of the total number of alleles. Two values allowed:
                         - all_cln: number computed from all VCF file sample columns [default]
-                        - pop_cln: number computed from the selected populations only 
+                        - pop_cln: number computed from the selected populations only
+    -n, --no-gt     skip genotype analysis to only output mutation effects
     -h, --help      this message
     "
 }
@@ -182,6 +184,7 @@ do
         -o|--out    ) report="${2%.tsv}.tsv" ; shift 2 ;;
         -p|--pop    ) mypop_f="$2"           ; shift 2 ;;
         -a|--all    ) myall="$2"             ; shift 2 ;;
+        -n|--no-gt  ) no_gt="no_gt"          ; shift 1 ;;
         -h|--help   ) usage ; exit 0 ;;
         *           ) error "Invalid option: $1\n$(usage)" 1 ;;
     esac
@@ -204,6 +207,7 @@ fi
 [[ -z $myall ]] && myall=all_cln
 [[ $myall != "all_cln" && $myall != "pop_cln" ]] && error "The -a value must be \"all_cln\" or \"pop_cln\". Exiting..." 1
 [[ $myall == "pop_cln" && -z "$mypop_f" ]] && warning "No population file given. Defaulting -a value to \"all_cln\"."
+[[ -z $no_gt ]] && gt="gt"
 
 # Check nature of files
 [[ ! -s "$myvcf" ]]    && error "VCF file does not exist or is empty. Exiting..." 1
@@ -253,37 +257,40 @@ wait
 # Populations #
 #-------------#
 
-# Header of the table report
-myhdr_pop="All_ref_allele_nb\tAll_alt_allele_nb\tAll_hmz_sample_nb\tAll_htz_sample_nb"
-
-# VCF column header (to find samples)
-myhdr_vcf=$(grep -m 1 "#C" "$myvcf")
-
-# Columns from VCF file to get genotype from
-[[ $myall == "all_cln" ]] && myclns="10-"
-[[ $myall == "pop_cln" ]] && myclns="$(echo "$myhdr_vcf" | tr "\t" "\n" | egrep -n "$(cut -f 1 "$mypop_f" | tr "\n" "|" | sed "s/|$//g")" | cut -d ":" -f 1 | tr "\n" "," | sed "s/,$//g")"
-
-# If different populations
-if [[ -n "$mypop_f" ]]
+if [[ -n $gt ]]
 then
-    # Population list
-    mypops=($(cut -f 2 "$mypop_f" | uniq))
+    # Header of the table report
+    myhdr_pop="All_ref_allele_nb\tAll_alt_allele_nb\tAll_hmz_sample_nb\tAll_htz_sample_nb"
 
-    # Check if file is ordered
-    [[ $(printf "%s\n" "${mypops[@]}" | sort | uniq | wc -l) != ${#mypops[@]} ]] && error "The file $mypop_f does not seem to be ordered. Exiting..." 1
-    
-    info "Identifying samples related to $(printf "%s, " "${mypops[@]}" | sed "s/, $//") population(s)"
-    
-    # Get corresponding VCF columns for each population
-    for p in ${mypops[@]}
-    do
-        myspl=$(awk -v p="$p" '$2 == p {print $1}' "$mypop_f" | sed -r "s/(.*)/\^\1\$/g" | tr "\n" "|" | sed "s/|$//g")
-        mycln=$(echo "$myhdr_vcf" | tr "\t" "\n" | egrep -n "$myspl" | cut -d ":" -f 1 | tr "\n" "," | sed "s/,$//g")
-        myclns=(${myclns[@]} $mycln)
+    # VCF column header (to find samples)
+    myhdr_vcf=$(grep -m 1 "#C" "$myvcf")
 
-        # Update header of the table report
-        myhdr_pop="${myhdr_pop}\t${p}_ref_allele_nb\t${p}_alt_allele_nb\t${p}_hmz_sample_nb\t${p}_htz_sample_nb"
-    done
+    # Columns from VCF file to get genotype from
+    [[ $myall == "all_cln" ]] && myclns="10-"
+    [[ $myall == "pop_cln" ]] && myclns="$(echo "$myhdr_vcf" | tr "\t" "\n" | egrep -n "$(cut -f 1 "$mypop_f" | tr "\n" "|" | sed "s/|$//g")" | cut -d ":" -f 1 | tr "\n" "," | sed "s/,$//g")"
+
+    # If different populations
+    if [[ -n "$mypop_f" ]]
+    then
+        # Population list
+        mypops=($(cut -f 2 "$mypop_f" | uniq))
+
+        # Check if file is ordered
+        [[ $(printf "%s\n" "${mypops[@]}" | sort | uniq | wc -l) != ${#mypops[@]} ]] && error "The file $mypop_f does not seem to be ordered. Exiting..." 1
+
+        info "Identifying samples related to $(printf "%s, " "${mypops[@]}" | sed "s/, $//") population(s)"
+
+        # Get corresponding VCF columns for each population
+        for p in ${mypops[@]}
+        do
+            myspl=$(awk -v p="$p" '$2 == p {print $1}' "$mypop_f" | sed -r "s/(.*)/\^\1\$/g" | tr "\n" "|" | sed "s/|$//g")
+            mycln=$(echo "$myhdr_vcf" | tr "\t" "\n" | egrep -n "$myspl" | cut -d ":" -f 1 | tr "\n" "," | sed "s/,$//g")
+            myclns=(${myclns[@]} $mycln)
+
+            # Update header of the table report
+            myhdr_pop="${myhdr_pop}\t${p}_ref_allele_nb\t${p}_alt_allele_nb\t${p}_hmz_sample_nb\t${p}_htz_sample_nb"
+        done
+    fi
 fi
 
 
@@ -390,7 +397,7 @@ mystep=1
 myend=$(wc -l < "$myvcf")
 
 # Determine GT column field
-GT_f=$(sed "/#/d" "$myvcf" | head -1 | cut -f 9 | tr ":" "\n" | cut -d ":" -f 1 | grep -n "GT" | cut -d ":" -f 1)
+[[ -n $gt ]] && GT_f=$(sed "/#/d" "$myvcf" | head -1 | cut -f 9 | tr ":" "\n" | cut -d ":" -f 1 | grep -n "GT" | cut -d ":" -f 1)
 
 # For each site of the VCF file
 while read myline
@@ -497,22 +504,25 @@ do
         #~~~~~~~~~~~~~#
         
         # Genotype and allele frequency for all and each population
-        for ((c=0 ; c < ${#myclns[@]} ; c++))
-        do
-            
-            # Genotype frequency
-            alleles=$(echo "$myline" | cut -f ${myclns[$c]} | tr "\t" "\n" | cut -d ":" -f $GT_f)
-            hmz=$(echo "$alleles" | egrep -c "$a[/|]$a"     ||:)
-            htz=$(echo "$alleles" | egrep -c "0[/|]$a|$a[/|]0" ||:)
+        if [[ -n $gt ]]
+        then
+            for ((c=0 ; c < ${#myclns[@]} ; c++))
+            do
 
-            # Allele frequency
-            alleles=$(echo  "$alleles" | sed "s,[/|],\\n,g")
-            myref_nb=$(echo "$alleles" | grep -c "0"  ||:)
-            myalt_nb=$(echo "$alleles" | grep -c "$a" ||:)
+                # Genotype frequency
+                alleles=$(echo "$myline" | cut -f ${myclns[$c]} | tr "\t" "\n" | cut -d ":" -f $GT_f)
+                hmz=$(echo "$alleles" | egrep -c "$a[/|]$a"     ||:)
+                htz=$(echo "$alleles" | egrep -c "0[/|]$a|$a[/|]0" ||:)
 
-            [[ $c == 0 ]] && myGT_ln="${myref_nb}\t${myalt_nb}\t$hmz\t$htz"
-            [[ $c > 0 ]]  && myGT_ln="${myGT_ln}\t${myref_nb}\t${myalt_nb}\t$hmz\t$htz"
-        done
+                # Allele frequency
+                alleles=$(echo  "$alleles" | sed "s,[/|],\\n,g")
+                myref_nb=$(echo "$alleles" | grep -c "0"  ||:)
+                myalt_nb=$(echo "$alleles" | grep -c "$a" ||:)
+
+                [[ $c == 0 ]] && myGT_ln="${myref_nb}\t${myalt_nb}\t$hmz\t$htz"
+                [[ $c > 0 ]]  && myGT_ln="${myGT_ln}\t${myref_nb}\t${myalt_nb}\t$hmz\t$htz"
+            done
+        fi
 
 
         # Mutation in protein
@@ -644,6 +654,8 @@ echo -e "Genomic_pos\tGene_pos\tCDS_pos\tGene_region\tMutation_type\tComplex_eve
 
 [[ $strand != - ]] && cat "$report_tmp" >> "$report"
 [[ $strand == - ]] && tac "$report_tmp" >> "$report"
+
+sed -i "s/\t$//g" "$report"
 
 # Generate multifasta files
 if [[ $strand == - ]]
